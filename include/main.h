@@ -25,14 +25,14 @@ int resX = 1024;
 int resY = 1024;
 
 int cells = 128;
-int particles = 10000000;
-float eta = 0.1;
+int particles = 9999873;
+float eta = 1.0;
 
 uint8_t frameId = 0;
 double deltas[60];
 
 bool debug = false;
-bool paused = true;
+bool paused = false;
 
 std::unique_ptr<jGL::jGLInstance> jGLInstance;
 
@@ -57,20 +57,18 @@ std::string fixedLengthNumber(double x, unsigned length)
 
 struct Visualise
 {
-    Visualise(GLuint texture)
-    : texture(texture)
+    Visualise(GLuint particlesTexture, GLuint obstaclesTexture)
+    : particlesTexture(particlesTexture), obstaclesTexture(obstaclesTexture)
     {
-        shader = jGL::GL::glShader(vertexShader, fragmentShader);
-        shader.compile();
-        glGenVertexArrays(1, &vao);
-        glBindVertexArray(vao);
-        glGenBuffers(1, &vbo);
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glGenVertexArrays(1, &pvao);
+        glBindVertexArray(pvao);
+        glGenBuffers(1, &pvbo);
+        glBindBuffer(GL_ARRAY_BUFFER, pvbo);
         glBufferData
         (
             GL_ARRAY_BUFFER,
             sizeof(float)*2,
-            &quad[0],
+            &p[0],
             GL_STATIC_DRAW
         );
         glEnableVertexAttribArray(0);
@@ -86,27 +84,82 @@ struct Visualise
         glVertexAttribDivisor(0,0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindVertexArray(0);
+
+        glGenVertexArrays(1, &qvao);
+        glBindVertexArray(qvao);
+        glGenBuffers(1, &qvbo);
+        glBindBuffer(GL_ARRAY_BUFFER, qvbo);
+        glBufferData
+        (
+            GL_ARRAY_BUFFER,
+            sizeof(float)*6*4,
+            &quad[0],
+            GL_STATIC_DRAW
+        );
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer
+        (
+            0,
+            4,
+            GL_FLOAT,
+            false,
+            4*sizeof(float),
+            0
+        );
+        glVertexAttribDivisor(0,0);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glBindVertexArray(0);
     }
 
-    void draw(uint64_t particles)
+    void drawParticles(uint64_t particles, float scale, glm::mat4 proj)
     {
         glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, texture);
+        glBindTexture(GL_TEXTURE_2D, particlesTexture);
+        shader = jGL::GL::glShader(vertexShader, fragmentShader);
+        shader.compile();
         shader.use();
         shader.setUniform("tex", jGL::Sampler2D(1));
         shader.setUniform("n", int(std::sqrt(particles)));
+        shader.setUniform("scale", scale);
+        shader.setUniform("proj", proj);
 
-        glBindVertexArray(vao);
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glBindVertexArray(pvao);
+        glBindBuffer(GL_ARRAY_BUFFER, pvbo);
         glDrawArraysInstanced(GL_POINTS, 0, 1, particles);
         glBindVertexArray(0);
     }
 
+    void drawObstacles(uint64_t obstacles, float scale, glm::mat4 proj)
+    {
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, obstaclesTexture);
+        shader = jGL::GL::glShader(obstacleVertexShader, obstacleFragmentShader);
+        shader.compile();
+        shader.use();
+        shader.setUniform("tex", jGL::Sampler2D(1));
+        shader.setUniform("proj", proj);
+
+        glBindVertexArray(qvao);
+        glBindBuffer(GL_ARRAY_BUFFER, qvbo);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindVertexArray(0);
+    }
+
     jGL::GL::glShader shader;
-    GLuint texture, vao, vbo;
-    float quad[2] =
+    GLuint particlesTexture, obstaclesTexture, pvao, pvbo, qvao, qvbo;
+    float p[2] =
     {
         0.0f,0.0f
+    };
+
+        float quad[6*4] =
+    {
+        -1.0, -1.0, 0.0, 0.0,
+         1.0, -1.0, 1.0, 0.0,
+         1.0,  1.0, 1.0, 1.0,
+        -1.0, -1.0, 0.0, 0.0,
+        -1.0,  1.0, 0.0, 1.0,
+         1.0,  1.0, 1.0, 1.0
     };
     const char * vertexShader =
     "#version " GLSL_VERSION "\n"
@@ -132,7 +185,9 @@ struct Visualise
     "void main(){\n"
     "   vec2 coords = particleNumberToTex(gl_InstanceID,n);\n"
     "   vec4 stateij = texture(tex, coords);\n"
-    "   o_colour = vec4(cmap(stateij.z/(2.0*3.14159)), 1.0);\n"
+    "   float theta = atan(stateij.w, stateij.z);\n"
+    "   if (theta < 0.0) { theta +=  2.0*3.14159; }"
+    "   o_colour = vec4(cmap(theta/(2.0*3.14159)), 1.0);\n"
     "   vec4 pos = proj*vec4(stateij.x,stateij.y,0.0,1.0);\n"
     "   gl_Position = vec4(a_position.xy+pos.xy,0.0,1.0);\n"
     "   gl_PointSize = scale;\n"
@@ -149,6 +204,29 @@ struct Visualise
     "   colour = vec4(o_colour.rgb,alpha);\n"
     "   if (colour.a == 0.0){discard;}\n"
     "}";
+
+    const char * obstacleVertexShader =
+    "#version " GLSL_VERSION "\n"
+    "precision highp float;\n"
+    "precision highp int;\n"
+    "layout(location = 0) in vec4 a_position;\n"
+    "uniform mat4 proj;\n"
+    "out vec2 o_texCoords;\n"
+    "void main(){\n"
+    "   gl_Position = vec4(a_position.xy,0.0,1.0);\n"
+    "   o_texCoords = a_position.zw;\n"
+    "}";
+
+    const char * obstacleFragmentShader =
+    "#version " GLSL_VERSION "\n"
+    "uniform highp sampler2D tex;\n"
+    "in vec2 o_texCoords;\n"
+    "out vec4 colour;\n"
+    "void main(void){\n"
+    "   vec4 t = texture(tex, o_texCoords);\n"
+    "   if (t.r == 0) { discard; }\n"
+    "   colour = vec4(1.0,1.0,1.0,t.r);\n"
+    "}";
 };
 
 const char * particlesComputeShader =
@@ -158,40 +236,59 @@ const char * particlesComputeShader =
     "in vec2 o_texCoords;\n"
     "layout(location=0) out vec4 output1;\n"
     "layout(location=1) out vec4 output2;\n"
-    "uniform highp sampler2D xythetac;\n"
-    "uniform highp sampler2D vxvyyomega;\n"
+    "uniform highp sampler2D xyvxvy;\n"
     "uniform highp sampler2D noise;\n"
-    "uniform int n;\n"
-    "uniform int l;\n"
-    "uniform vec2 centre;\n"
-    "uniform float dt;\n"
-    "uniform float diff;\n"
+    "uniform highp sampler2D obstacles;\n"
+    "uniform int n; uniform int l;\n"
+    "uniform vec2 centre; uniform vec2 res;\n"
+    "uniform float dt; uniform float diff;\n"
+    "uniform int steps;\n"
     "float random(vec2 st){\n"
     "    return clamp(fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123), 0.001, 1.0);\n"
     "}\n"
     "void main(){\n"
     "    int i = int(o_texCoords.x*float(l)); int j = int(o_texCoords.y*float(l));\n"
-    "    vec4 xythetac = texture(xythetac, o_texCoords);\n"
-    "    vec4 vxvyyomega = texture(vxvyyomega, o_texCoords);\n"
+    "    vec4 xyvxvy = texture(xyvxvy, o_texCoords);\n"
     "    float d = texture(noise, o_texCoords).r;\n"
-    "    float dx = (random(d*xythetac.xy)-0.5); float dy = (random(d*xythetac.yx)-0.5);\n"
-    "    vec2 r = centre-xythetac.xy;\n"
-    "    float dist = length(r);\n"
-    "    float fx = 0.0; float fy = 0.0;"
-    "    if (dist > 0.5) {"
-    "       fx = 10.0*r.x+dx; fy = 10.0*r.y+dy;\n"
+    "    vec2 p = xyvxvy.xy; vec2 v = xyvxvy.zw;\n"
+    "    float dtau = dt/float(steps);\n"
+    "    vec2 f = vec2(0.0, 0.0);\n"
+    "    for (int k = 0; k < steps; k++){"
+    "       f = vec2(0.0, 0.0);"
+    "       float dx = (random(d*p)-0.5); float dy = (random(d*p)-0.5);\n"
+    "       float obs = texture(obstacles, p).r;\n"
+    "       vec2 r = centre-p;\n"
+    "       float dist = length(r);\n"
+    "       if (obs == 1.0) {"
+    "            int search = 2;"
+    "            vec2 dir = -v;\n"
+    "            float mag = length(v)*dt;\n"
+    "            for (int ix = -search; ix < search; ix++){"
+    "                for (int iy = -search; iy < search; iy++){"
+    "                    vec2 c = p+vec2(float(ix)/res.x, float(iy)/res.y);\n"
+    "                    float obsn = texture(obstacles, c).r;\n"
+    "                    if (obsn == 0.0) {"
+    "                        dir = vec2(float(ix)/res.x, float(iy)/res.y);\n"
+    "                        mag = length(dir);\n"
+    "                        break;\n"
+    "                    }"
+    "                }"
+    "            }"
+    "            vec2 r = p-(floor(p*res)/res+0.5/res);\n"
+    "            float d = dot(r, r);\n"
+    "            p += mag*dir/length(dir);\n"
+    "            v = v - 2.0*(dot(v, r)/d)*r;\n"
+    "        }"
+    "        else {\n"
+    "           f += 10.0*(vec2(0.5, 0.5)-p);\n"
+    "           if (dist < 0.001) { dist = 0.001; }"
+    "           float d3 = dist*dist*dist;\n"
+    "           //f += vec2(r.x/d3,r.y/d3);\n"
+    "           v += dt*f;\n"
+    "       }"
+    "       p += dt*v;\n"
     "    }"
-    "    else {"
-    "       if (dist < 0.001) { dist = 0.001; }"
-    "       float d3 = dist*dist*dist;\n"
-    "       fx = r.x/d3+dx; fy = r.y/d3+dy;\n"
-    "    }"
-    "    vec2 v = vxvyyomega.xy+vec2(fx, fy)*dt;\n"
-    "    vec2 xy = xythetac.xy+vxvyyomega.xy*dt;\n"
-    "    float theta = atan(v.y, v.x);\n"
-    "    if (theta < 0.0) { theta +=  2.0*3.14159; }"
-    "    output1 = vec4(xy, theta, 0.0);\n"
-    "    output2 = vec4(v, 0.0, 0.0);\n"
+    "    output1 = vec4(p, v);\n"
     "}";
 
 float clamp(float x, float low, float high)
@@ -208,6 +305,21 @@ float poly(float x, float p0, float p1, float p2, float p3, float p4)
 glm::vec3 cmap(float t)
 {
     return glm::vec3( poly(t,0.91, 3.74, -32.33, 57.57, -28.99), poly(t,0.2, 5.6, -18.89, 25.55, -12.25), poly(t,0.22, -4.89, 22.31, -23.58, 5.97) );
+}
+
+void place(std::vector<float> & into, int i, int j, int brush, int l)
+{
+    for (int n = -brush; n <= brush; n++)
+    {
+        for (int m = -brush; m <= brush; m++)
+        {
+            int ix = (n+i) % l;
+            int iy = (m+j) % l;
+            if (ix < 0) { ix += l; }
+            if (iy < 0) { iy += l; }
+            into[iy*l+ix] = 1.0;
+        }
+    }
 }
 
 #endif /* MAIN_H */
