@@ -40,11 +40,11 @@ int main(int argv, char ** argc)
 
     glewInit();
 
-    glm::ivec2 res = display.frameBufferSize();
-    resX = res.x;
-    resY = res.y;
+    // glm::ivec2 res = display.frameBufferSize();
+    // resX = res.x;
+    // resY = res.y;
 
-    jGLInstance = std::move(std::make_unique<jGL::GL::OpenGLInstance>(res));
+    jGLInstance = std::move(std::make_unique<jGL::GL::OpenGLInstance>(glm::ivec2(resX,resY)));
 
     jGL::OrthoCam camera(resX, resY, glm::vec2(0.0,0.0));
 
@@ -56,7 +56,7 @@ int main(int argv, char ** argc)
     double rdt = 0.0;
 
     jGLInstance->setTextProjection(glm::ortho(0.0,double(resX),0.0,double(resY)));
-    jGLInstance->setMSAA(1);
+    jGLInstance->setMSAA(0);
 
     RNG rng;
 
@@ -71,32 +71,30 @@ int main(int argv, char ** argc)
     shader->use();
 
     double delta = 0.0;
-    double dt = 1e-3;
-    float D = std::sqrt(2.0*eta*1.0/dt);
+    double dt = 1e-4;
     jGL::ShapeRenderer::UpdateInfo uinfo;
 
     int l = std::ceil(std::sqrt(particles));
     float lc = 1.0/float(cells);
 
     std::vector<float> noise(particles, 0.0);
-    std::vector<float> xythetac(particles*4, 0.0);
-    std::vector<float> vxvyyomega(particles*4, 0.0);
+    std::vector<float> xyvxvy(particles*4, 0.0);
+    std::vector<float> obstacles(resX*resY, 0.0);
     for (int i = 0; i < noise.size(); i++)
     {
         noise[i] = rng.nextFloat();
-        xythetac[i*4] = rng.nextFloat();
-        xythetac[i*4+1] = rng.nextFloat();
-        xythetac[i*4+2] = rng.nextFloat();
-        xythetac[i*4+3] = std::floor(xythetac[i*4]/lc)*cells+std::floor(xythetac[i*4+1]/lc);
+        float t = rng.nextFloat()*2.0*3.14159;
+        xyvxvy[i*4] = std::cos(t)*(rng.nextFloat()*(1.0-0.5)+0.5)+0.5;
+        xyvxvy[i*4+1] = std::sin(t)*(rng.nextFloat()*(1.0-0.5)+0.5)+0.5;
     }
     std::cout << l*l << "\n";
 
     glCompute compute
     (
         {
-            {"xythetac", {l, l, 4}},
-            {"vxvyyomega", {l, l, 4}},
-            {"noise", {l, l, 1}}
+            {"xyvxvy", {l, l, 4}},
+            {"noise", {l, l, 1}},
+            {"obstacles", {resX, resY, 1}}
         },
         {l, l, 4},
         2,
@@ -104,21 +102,25 @@ int main(int argv, char ** argc)
     );
 
     compute.set("noise", noise);
-    compute.set("xythetac", xythetac);
-    compute.set("vxvyyomega", vxvyyomega);
+    compute.set("xyvxvy", xyvxvy);
+    compute.set("obstacles", obstacles);
     compute.sync();
 
     compute.shader.setUniform("n", particles);
     compute.shader.setUniform("l", l);
     compute.shader.setUniform("dt", float(dt));
-    compute.shader.setUniform("diff", D);
+    compute.shader.setUniform("diff", eta);
     compute.shader.setUniform("centre", glm::vec2(0.5,0.5));
+    compute.shader.setUniform("res", glm::vec2(resX, resY));
+    compute.shader.setUniform("steps", 4);
 
-    Visualise vis(compute.outputTexture());
-    vis.shader.setUniform("proj", camera.getVP());
-    vis.shader.setUniform("scale", 0.33f);
+    Visualise vis(compute.getTexture("xyvxvy"), compute.getTexture("obstacles"));
+    float pscale = 1.0f;
+    float oscale = 1.0/resX;
     glEnable(GL_PROGRAM_POINT_SIZE);
     glEnable(GL_POINT_SPRITE);
+
+    bool placeing = false;
 
     auto start = std::chrono::steady_clock::now();
 
@@ -140,6 +142,24 @@ int main(int argv, char ** argc)
             paused = !paused;
         }
 
+        if (display.keyHasEvent(GLFW_MOUSE_BUTTON_LEFT, jGL::EventType::PRESS) || display.keyHasEvent(GLFW_MOUSE_BUTTON_LEFT, jGL::EventType::HOLD))
+        {
+            placeing = true;
+        }
+        else if (display.keyHasEvent(GLFW_MOUSE_BUTTON_LEFT, jGL::EventType::RELEASE))
+        {
+            placeing = false;
+        }
+
+        if (placeing)
+        {
+            double mouseX, mouseY;
+            display.mousePosition(mouseX,mouseY);
+            place(obstacles, int(mouseX), int(resY-mouseY), 16, resX);
+            compute.set("obstacles", obstacles);
+            compute.sync("obstacles");
+        }
+
         if (!paused)
         {
             double mouseX, mouseY;
@@ -149,21 +169,14 @@ int main(int argv, char ** argc)
             compute.glCopyTexture
             (
                 compute.outputTexture(0),
-                compute.getTexture("xythetac"),
+                compute.getTexture("xyvxvy"),
                 glm::vec2(l, l)
             );
-
-            compute.glCopyTexture
-            (
-                compute.outputTexture(1),
-                compute.getTexture("vxvyyomega"),
-                glm::vec2(l, l)
-            );
-
-            glClearColor(0.0,0.0,0.0,1.0);
-            glClear(GL_COLOR_BUFFER_BIT);
-            vis.draw(particles);
         }
+        glClearColor(0.0,0.0,0.0,1.0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        vis.drawParticles(particles, pscale, camera.getVP());
+        vis.drawObstacles(obstacles.size(), oscale, camera.getVP());
 
         delta = 0.0;
         for (int n = 0; n < 60; n++)
