@@ -111,6 +111,7 @@ int main(int argv, char ** argc)
     compute.shader.setUniform("centre", glm::vec2(0.5,0.5));
     compute.shader.setUniform("res", glm::vec2(resX, resY));
     compute.shader.setUniform("steps", 4);
+    compute.shader.setUniform("reset", 0.0f);
 
     Visualise vis(compute.getTexture("xyvxvy"), compute.getTexture("obstacles"));
     float pscale = 1.0f;
@@ -119,6 +120,7 @@ int main(int argv, char ** argc)
     glEnable(GL_POINT_SPRITE);
 
     bool placeing = false; bool removing = false;
+    bool reset = false;
 
     auto start = std::chrono::steady_clock::now();
 
@@ -138,6 +140,11 @@ int main(int argv, char ** argc)
         if (display.keyHasEvent(GLFW_KEY_SPACE, jGL::EventType::PRESS))
         {
             paused = !paused;
+        }
+
+        if (display.keyHasEvent(GLFW_KEY_R, jGL::EventType::PRESS))
+        {
+            reset = true;
         }
 
         if (display.keyHasEvent(GLFW_MOUSE_BUTTON_LEFT, jGL::EventType::PRESS) || display.keyHasEvent(GLFW_MOUSE_BUTTON_LEFT, jGL::EventType::HOLD))
@@ -174,6 +181,7 @@ int main(int argv, char ** argc)
 
         if (!paused)
         {
+            if (reset) { compute.shader.setUniform("reset", 1.0f); }
             double mouseX, mouseY;
             display.mousePosition(mouseX,mouseY);
             compute.shader.setUniform("centre", glm::vec2(mouseX/resX, 1.0-mouseY/resY));
@@ -184,6 +192,7 @@ int main(int argv, char ** argc)
                 compute.getTexture("xyvxvy"),
                 glm::vec2(l, l)
             );
+            if (reset) { compute.shader.setUniform("reset", 0.0f); reset = false; }
         }
         glClearColor(0.0,0.0,0.0,1.0);
         glClear(GL_COLOR_BUFFER_BIT);
