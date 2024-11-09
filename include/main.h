@@ -25,7 +25,7 @@ int resX = 1024;
 int resY = 1024;
 
 int cells = 128;
-int particles = 9999873;
+int particles = 1999873;
 float eta = 1.0;
 
 uint8_t frameId = 0;
@@ -109,6 +109,49 @@ struct Visualise
         glVertexAttribDivisor(0,0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindVertexArray(0);
+        glGenFramebuffers(1, &frameBuffer);
+    }
+
+    void densityMap(GLuint tex, uint64_t particles, float scale, glm::mat4 proj)
+    {
+        glBindFramebuffer(GL_FRAMEBUFFER, frameBuffer);
+
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, tex);
+
+        glFramebufferTexture2D
+        (
+            GL_FRAMEBUFFER,
+            GL_COLOR_ATTACHMENT0,
+            GL_TEXTURE_2D,
+            tex,
+            0
+        );
+        GLenum drawBuffers[1] = {GL_COLOR_ATTACHMENT0};
+        glDrawBuffers(1, drawBuffers);
+
+        glClearColor(0.0,0.0,0.0,0.0);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, particlesTexture);
+        shader = jGL::GL::glShader(vertexShader, fragmentShader);
+        shader.compile();
+        shader.use();
+        shader.setUniform("tex", jGL::Sampler2D(2));
+        shader.setUniform("n", int(std::sqrt(particles)));
+        shader.setUniform("scale", scale);
+        shader.setUniform("proj", proj);
+
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+
+        glBindVertexArray(pvao);
+        glBindBuffer(GL_ARRAY_BUFFER, pvbo);
+        glDrawArraysInstanced(GL_POINTS, 0, 1, particles);
+        glBindVertexArray(0);
+
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     }
 
     void drawParticles(uint64_t particles, float scale, glm::mat4 proj)
@@ -146,7 +189,7 @@ struct Visualise
     }
 
     jGL::GL::glShader shader;
-    GLuint particlesTexture, obstaclesTexture, pvao, pvbo, qvao, qvbo;
+    GLuint particlesTexture, obstaclesTexture, pvao, pvbo, qvao, qvbo, frameBuffer;
     float p[2] =
     {
         0.0f,0.0f
@@ -205,6 +248,15 @@ struct Visualise
     "   if (colour.a == 0.0){discard;}\n"
     "}";
 
+    const char * densityFragmentShader =
+    "#version " GLSL_VERSION "\n"
+    "in vec4 o_colour;\n"
+    "out vec4 colour;\n"
+    "void main(void){\n"
+    "   colour = vec4(0.001);\n"
+    "   if (colour.a == 0.0){discard;}\n"
+    "}";
+
     const char * obstacleVertexShader =
     "#version " GLSL_VERSION "\n"
     "precision highp float;\n"
@@ -239,6 +291,7 @@ const char * particlesComputeShader =
     "uniform highp sampler2D xyvxvy;\n"
     "uniform highp sampler2D noise;\n"
     "uniform highp sampler2D obstacles;\n"
+    "uniform highp sampler2D density;\n"
     "uniform int n; uniform int l;\n"
     "uniform vec2 centre; uniform vec2 res;\n"
     "uniform float dt; uniform float diff;\n"
@@ -255,8 +308,15 @@ const char * particlesComputeShader =
     "    vec2 f = vec2(0.0, 0.0);\n"
     "    for (int k = 0; k < steps; k++){"
     "       float dx = (random(d*k*vec2(p.x,v.x))-0.5); float dy = (random(vec2(p.y,v.y)*d*k)-0.5);\n"
-    "       f = 20.0*vec2(dx, dy);"
+    "       f = 10.0*vec2(dx, dy);"
     "       float obs = texture(obstacles, p).r;\n"
+    // "       float rho = 0.0; int search = 3;\n"
+    // "       for (int ix = -search; ix < search; ix++){"
+    // "            for (int iy = -search; iy < search; iy++){"
+    // "                rho += texture(density, p+vec2(float(ix)/res.x, float(iy)/res.y)).r;\n"
+    // "            }"
+    // "       }"
+    // "       vec2 grad = vec2(dFdx(rho), dFdy(rho))/float(search*search);\n"
     "       vec2 r = centre-p;\n"
     "       float dist = length(r);\n"
     "       if (obs == 1.0) {"
@@ -277,15 +337,28 @@ const char * particlesComputeShader =
     "            vec2 r = p-(floor(p*res)/res+0.5/res);\n"
     "            float d = dot(r, r);\n"
     "            p += mag*dir/length(dir);\n"
-    "            v = v - 2.0*(dot(v, r)/d)*r+f*dt;\n"
+    "            v = v - 1.0*(dot(v, r)/d)*r+f*dt;\n"
     "        }"
     "        else {\n"
-    "           d = length(r);\n"
-    "           f += 10.0*r/(d*d);\n"
-    "           v += dt*f;\n"
+    "           //d = length(r);\n"
+    "           //f += 10.0*r/(d*d);\n"
+    "           v += dt*(f+vec2(0.0,-9.81));\n"
     "       }"
     "       p += dt*v;\n"
-    "    }"
+    // "       bool wallx = p.x < 0.0 || p.x > 1.0;\n"
+    // "       bool wally = p.y < 0.0 || p.y > 1.0;\n"
+    // "       if (wallx || wally) { p -= dt*v; };\n"
+    // "       if (wallx) {\n"
+    // "           v = vec2(v.x,-v.y);\n"
+    // "       }\n"
+    // "       if (wally) {\n"
+    // "           v = vec2(-v.x,v.y);\n"
+    // "       }\n"
+    // "       if (wallx || wally) { p += dt*v; }\n"
+    "    }\n"
+    "    if (p.x < 0.0) { p.x += 1.0; }"
+    "    if (p.x > 1.0) { p.x -= 1.0; }"
+    "    if (p.y < 0.0) { p.y += 1.5; v = vec2(random(d*vec2(p.x,v.x))-0.5, random(d*vec2(p.y,v.y))-0.5);}"
     "    output1 = vec4(p, v);\n"
     "}";
 
@@ -305,7 +378,7 @@ glm::vec3 cmap(float t)
     return glm::vec3( poly(t,0.91, 3.74, -32.33, 57.57, -28.99), poly(t,0.2, 5.6, -18.89, 25.55, -12.25), poly(t,0.22, -4.89, 22.31, -23.58, 5.97) );
 }
 
-void place(std::vector<float> & into, int i, int j, int brush, int l)
+void placeOrRemove(std::vector<float> & into, int i, int j, int brush, int l, float value)
 {
     for (int n = -brush; n <= brush; n++)
     {
@@ -315,7 +388,7 @@ void place(std::vector<float> & into, int i, int j, int brush, int l)
             int iy = (m+j) % l;
             if (ix < 0) { ix += l; }
             if (iy < 0) { iy += l; }
-            into[iy*l+ix] = 1.0;
+            into[iy*l+ix] = value;
         }
     }
 }

@@ -40,10 +40,6 @@ int main(int argv, char ** argc)
 
     glewInit();
 
-    // glm::ivec2 res = display.frameBufferSize();
-    // resX = res.x;
-    // resY = res.y;
-
     jGLInstance = std::move(std::make_unique<jGL::GL::OpenGLInstance>(glm::ivec2(resX,resY)));
 
     jGL::OrthoCam camera(resX, resY, glm::vec2(0.0,0.0));
@@ -80,12 +76,12 @@ int main(int argv, char ** argc)
     std::vector<float> noise(particles, 0.0);
     std::vector<float> xyvxvy(particles*4, 0.0);
     std::vector<float> obstacles(resX*resY, 0.0);
+    std::vector<float> density(resX*resY, 0.0);
     for (int i = 0; i < noise.size(); i++)
     {
         noise[i] = rng.nextFloat();
-        float t = rng.nextFloat()*2.0*3.14159;
-        xyvxvy[i*4] = std::cos(t)*(rng.nextFloat()*(1.0-0.5)+0.5)+0.5;
-        xyvxvy[i*4+1] = std::sin(t)*(rng.nextFloat()*(1.0-0.5)+0.5)+0.5;
+        xyvxvy[i*4] = rng.nextFloat();
+        xyvxvy[i*4+1] = rng.nextFloat()*(2.0-0.95)+0.95;
     }
     std::cout << l*l << "\n";
 
@@ -94,7 +90,8 @@ int main(int argv, char ** argc)
         {
             {"xyvxvy", {l, l, 4}},
             {"noise", {l, l, 1}},
-            {"obstacles", {resX, resY, 1}}
+            {"obstacles", {resX, resY, 1}},
+            {"density", {resX, resY, 1}}
         },
         {l, l, 4},
         2,
@@ -104,6 +101,7 @@ int main(int argv, char ** argc)
     compute.set("noise", noise);
     compute.set("xyvxvy", xyvxvy);
     compute.set("obstacles", obstacles);
+    compute.set("density", density);
     compute.sync();
 
     compute.shader.setUniform("n", particles);
@@ -120,7 +118,7 @@ int main(int argv, char ** argc)
     glEnable(GL_PROGRAM_POINT_SIZE);
     glEnable(GL_POINT_SPRITE);
 
-    bool placeing = false;
+    bool placeing = false; bool removing = false;
 
     auto start = std::chrono::steady_clock::now();
 
@@ -145,17 +143,31 @@ int main(int argv, char ** argc)
         if (display.keyHasEvent(GLFW_MOUSE_BUTTON_LEFT, jGL::EventType::PRESS) || display.keyHasEvent(GLFW_MOUSE_BUTTON_LEFT, jGL::EventType::HOLD))
         {
             placeing = true;
+            removing = false;
         }
         else if (display.keyHasEvent(GLFW_MOUSE_BUTTON_LEFT, jGL::EventType::RELEASE))
         {
             placeing = false;
         }
 
-        if (placeing)
+        if (display.keyHasEvent(GLFW_MOUSE_BUTTON_RIGHT, jGL::EventType::PRESS) || display.keyHasEvent(GLFW_MOUSE_BUTTON_RIGHT, jGL::EventType::HOLD))
+        {
+            removing = true;
+            placeing = false;
+        }
+        else if (display.keyHasEvent(GLFW_MOUSE_BUTTON_RIGHT, jGL::EventType::RELEASE))
+        {
+            removing = false;
+        }
+
+        if (placeing || removing)
         {
             double mouseX, mouseY;
             display.mousePosition(mouseX,mouseY);
-            place(obstacles, int(mouseX), int(resY-mouseY), 16, resX);
+            float value = 0.0;
+            if (placeing) { value = 1.0; }
+            if (removing) { value = 0.0; }
+            placeOrRemove(obstacles, int(mouseX), int(resY-mouseY), 16, resX, value);
             compute.set("obstacles", obstacles);
             compute.sync("obstacles");
         }
@@ -177,6 +189,7 @@ int main(int argv, char ** argc)
         glClear(GL_COLOR_BUFFER_BIT);
         vis.drawParticles(particles, pscale, camera.getVP());
         vis.drawObstacles(obstacles.size(), oscale, camera.getVP());
+        //vis.densityMap(compute.getTexture("density"), particles, pscale, camera.getVP());
 
         delta = 0.0;
         for (int n = 0; n < 60; n++)
